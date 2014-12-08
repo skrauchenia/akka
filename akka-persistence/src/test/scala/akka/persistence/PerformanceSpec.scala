@@ -47,24 +47,7 @@ object PerformanceSpec {
     def lastSequenceNr: Long
   }
 
-  class PerformanceTestDestination extends Actor with Measure {
-    var lastSequenceNr = 0L
-
-    val confirm: PartialFunction[Any, Any] = {
-      case cp @ ConfirmablePersistent(payload, sequenceNr, _) ⇒
-        lastSequenceNr = sequenceNr
-        cp.confirm()
-        payload
-    }
-
-    def receive = confirm andThen {
-      case StartMeasure ⇒ startMeasure()
-      case StopMeasure  ⇒ stopMeasure()
-      case m            ⇒ if (lastSequenceNr % 1000 == 0) print(".")
-    }
-  }
-
-  abstract class PerformanceTestProcessor(name: String) extends NamedProcessor(name) with Measure {
+  abstract class PerformanceTestPersistentActor(name: String) extends NamedPersistentActor(name) with Measure {
     var failAt: Long = -1
 
     val controlBehavior: Receive = {
@@ -79,15 +62,7 @@ object PerformanceSpec {
     }
   }
 
-  class CommandsourcedTestProcessor(name: String) extends PerformanceTestProcessor(name) {
-    def receive = controlBehavior orElse {
-      case p: Persistent ⇒
-        if (lastSequenceNr % 1000 == 0) if (recoveryRunning) print("r") else print(".")
-        if (lastSequenceNr == failAt) throw new TestException("boom")
-    }
-  }
-
-  class CommandsourcedTestPersistentActor(name: String) extends PerformanceTestProcessor(name) with PersistentActor {
+  class CommandsourcedTestPersistentActor(name: String) extends PerformanceTestPersistentActor(name) {
 
     override val controlBehavior: Receive = {
       case StartMeasure       ⇒ startMeasure()
@@ -107,7 +82,7 @@ object PerformanceSpec {
     }
   }
 
-  class EventsourcedTestProcessor(name: String) extends PerformanceTestProcessor(name) with PersistentActor {
+  class EventsourcedTestPersistentActor(name: String) extends PerformanceTestPersistentActor(name) {
     val receiveRecover: Receive = {
       case _ ⇒ if (lastSequenceNr % 1000 == 0) print("r")
     }
@@ -120,7 +95,7 @@ object PerformanceSpec {
     }
   }
 
-  class StashingEventsourcedTestProcessor(name: String) extends PerformanceTestProcessor(name) with PersistentActor {
+  class StashingEventsourcedTestPersistentActor(name: String) extends PerformanceTestPersistentActor(name) {
     val receiveRecover: Receive = {
       case _ ⇒ if (lastSequenceNr % 1000 == 0) print("r")
     }
@@ -149,84 +124,48 @@ class PerformanceSpec extends AkkaSpec(PersistenceSpec.config("leveldb", "Perfor
   val warmupCycles = system.settings.config.getInt("akka.persistence.performance.cycles.warmup")
   val loadCycles = system.settings.config.getInt("akka.persistence.performance.cycles.load")
 
-  def stressCommandsourcedProcessor(failAt: Option[Long]): Unit = {
-    val processor = namedProcessor[CommandsourcedTestProcessor]
-    failAt foreach { processor ! FailAt(_) }
-    1 to warmupCycles foreach { i ⇒ processor ! Persistent(s"msg${i}") }
-    processor ! StartMeasure
-    1 to loadCycles foreach { i ⇒ processor ! Persistent(s"msg${i}") }
-    processor ! StopMeasure
-    expectMsgPF(100 seconds) {
-      case throughput: Double ⇒ println(f"\nthroughput = $throughput%.2f persistent processor commands per second")
-    }
-  }
-
   def stressCommandsourcedPersistentActor(failAt: Option[Long]): Unit = {
-    val processor = namedProcessor[CommandsourcedTestPersistentActor]
-    failAt foreach { processor ! FailAt(_) }
-    1 to warmupCycles foreach { i ⇒ processor ! s"msg${i}" }
-    processor ! StartMeasure
-    1 to loadCycles foreach { i ⇒ processor ! s"msg${i}" }
-    processor ! StopMeasure
+    val persistentActor = namedPersistentActor[CommandsourcedTestPersistentActor]
+    failAt foreach { persistentActor ! FailAt(_) }
+    1 to warmupCycles foreach { i ⇒ persistentActor ! s"msg${i}" }
+    persistentActor ! StartMeasure
+    1 to loadCycles foreach { i ⇒ persistentActor ! s"msg${i}" }
+    persistentActor ! StopMeasure
     expectMsgPF(100 seconds) {
       case throughput: Double ⇒ println(f"\nthroughput = $throughput%.2f persistent actor commands per second")
     }
   }
 
   def stressPersistentActor(failAt: Option[Long]): Unit = {
-    val processor = namedProcessor[EventsourcedTestProcessor]
-    failAt foreach { processor ! FailAt(_) }
-    1 to warmupCycles foreach { i ⇒ processor ! s"msg${i}" }
-    processor ! StartMeasure
-    1 to loadCycles foreach { i ⇒ processor ! s"msg${i}" }
-    processor ! StopMeasure
+    val persistentActor = namedPersistentActor[EventsourcedTestPersistentActor]
+    failAt foreach { persistentActor ! FailAt(_) }
+    1 to warmupCycles foreach { i ⇒ persistentActor ! s"msg${i}" }
+    persistentActor ! StartMeasure
+    1 to loadCycles foreach { i ⇒ persistentActor ! s"msg${i}" }
+    persistentActor ! StopMeasure
     expectMsgPF(100 seconds) {
       case throughput: Double ⇒ println(f"\nthroughput = $throughput%.2f persistent events per second")
     }
   }
 
   def stressStashingPersistentActor(): Unit = {
-    val processor = namedProcessor[StashingEventsourcedTestProcessor]
-    1 to warmupCycles foreach { i ⇒ processor ! "b" }
-    processor ! StartMeasure
+    val persistentActor = namedPersistentActor[StashingEventsourcedTestPersistentActor]
+    1 to warmupCycles foreach { i ⇒ persistentActor ! "b" }
+    persistentActor ! StartMeasure
     val cmds = 1 to (loadCycles / 3) flatMap (_ ⇒ List("a", "b", "c"))
-    processor ! StartMeasure
-    cmds foreach (processor ! _)
-    processor ! StopMeasure
+    persistentActor ! StartMeasure
+    cmds foreach (persistentActor ! _)
+    persistentActor ! StopMeasure
     expectMsgPF(100 seconds) {
       case throughput: Double ⇒ println(f"\nthroughput = $throughput%.2f persistent events per second")
     }
   }
 
-  def stressPersistentChannel(): Unit = {
-    val channel = system.actorOf(PersistentChannel.props())
-    val destination = system.actorOf(Props[PerformanceTestDestination])
-    1 to warmupCycles foreach { i ⇒ channel ! Deliver(PersistentRepr(s"msg${i}", persistenceId = "test"), destination.path) }
-    channel ! Deliver(Persistent(StartMeasure), destination.path)
-    1 to loadCycles foreach { i ⇒ channel ! Deliver(PersistentRepr(s"msg${i}", persistenceId = "test"), destination.path) }
-    channel ! Deliver(Persistent(StopMeasure), destination.path)
-    expectMsgPF(100 seconds) {
-      case throughput: Double ⇒ println(f"\nthroughput = $throughput%.2f persistent messages per second")
-    }
-  }
-
-  def subscribeToConfirmation(probe: TestProbe): Unit =
-    system.eventStream.subscribe(probe.ref, classOf[DeliveredByPersistentChannel])
-
-  def awaitConfirmation(probe: TestProbe): Unit =
-    probe.expectMsgType[DeliveredByPersistentChannel]
-
-  "A command sourced processor" should {
-    "have some reasonable throughput" in {
-      stressCommandsourcedProcessor(None)
-    }
-    "have some reasonable throughput under failure conditions" in {
-      stressCommandsourcedProcessor(Some(warmupCycles + loadCycles / 10))
-    }
-  }
-
   "A command sourced persistent actor" should {
     "have some reasonable throughput" in {
+      stressCommandsourcedPersistentActor(None)
+    }
+    "have some reasonable throughput 2" in {
       stressCommandsourcedPersistentActor(None)
     }
   }
@@ -243,16 +182,4 @@ class PerformanceSpec extends AkkaSpec(PersistenceSpec.config("leveldb", "Perfor
     }
   }
 
-  "A persistent channel" should {
-    "have some reasonable throughput" in {
-      val probe = TestProbe()
-      subscribeToConfirmation(probe)
-
-      stressPersistentChannel()
-
-      probe.fishForMessage(100.seconds) {
-        case DeliveredByPersistentChannel(_, snr, _, _) ⇒ snr == warmupCycles + loadCycles + 2
-      }
-    }
-  }
 }
