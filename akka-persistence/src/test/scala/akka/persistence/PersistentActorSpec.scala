@@ -14,10 +14,13 @@ import akka.testkit.TestProbe
 import java.util.concurrent.atomic.AtomicInteger
 import scala.util.Random
 import scala.util.control.NoStackTrace
+import akka.testkit.TestLatch
+import scala.concurrent.Await
 
 object PersistentActorSpec {
   final case class Cmd(data: Any)
   final case class Evt(data: Any)
+  final case class LatchCmd(latch: TestLatch, data: Any) extends NoSerializationVerificationNeeded
 
   abstract class ExamplePersistentActor(name: String) extends NamedPersistentActor(name) with PersistentActor {
     var events: List[Any] = Nil
@@ -399,6 +402,20 @@ object PersistentActorSpec {
         defer("d-1") { sender() ! _ }
         defer("d-2") { sender() ! _ }
         defer("d-3") { sender() ! _ }
+    }
+  }
+
+  class StressOrdering(name: String) extends ExamplePersistentActor(name) {
+    val receiveCommand: Receive = {
+      case LatchCmd(latch, data) ⇒
+        sender() ! data
+        Await.ready(latch, 5.seconds)
+        defer(data)(_ ⇒ ())
+      case Cmd(data) ⇒
+        sender() ! data
+        persist(data)(_ ⇒ ())
+      case s: String ⇒
+        sender() ! s
     }
   }
 
@@ -829,6 +846,19 @@ abstract class PersistentActorSpec(config: Config) extends AkkaSpec(config) with
       persistentActor2 ! GetState
       expectMsg(List("a-1", "a-2", "b-41", "b-42", "c-41", "c-42", RecoveryCompleted))
     }
+    "preserv order of incoming messages" in {
+      val persistentActor = namedPersistentActor[StressOrdering]
+      persistentActor ! Cmd("a")
+      val latch = TestLatch(1)
+      persistentActor ! LatchCmd(latch, "b")
+      persistentActor ! "c"
+      expectMsg("a")
+      expectMsg("b")
+      persistentActor ! "d"
+      latch.countDown()
+      expectMsg("c")
+      expectMsg("d")
+    }
     "be used as a stackable modification" in {
       val persistentActor = system.actorOf(Props(classOf[StackableTestPersistentActor], testActor))
       expectMsg("mixin aroundPreStart")
@@ -856,6 +886,7 @@ abstract class PersistentActorSpec(config: Config) extends AkkaSpec(config) with
 
       expectNoMsg(100.millis)
     }
+
   }
 
 }

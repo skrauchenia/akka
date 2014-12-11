@@ -21,7 +21,7 @@ import akka.persistence.serialization.Message
  *
  * In essence it is either an [[NonPersistentRepr]] or [[PersistentRepr]].
  */
-private[persistence] sealed trait Resequenceable {
+private[persistence] sealed trait Resequenceable { // FIXME PN: Rename to PersistentEnvelope
   def payload: Any
   def sender: ActorRef
 }

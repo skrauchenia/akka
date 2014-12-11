@@ -211,9 +211,6 @@ trait PersistentView extends Actor with Snapshotter with Stash with StashFactory
     currentState = state
   }
 
-  private def superAroundReceive(receive: Receive, message: Any): Unit =
-    super.aroundReceive(receive, message)
-
   // TODO There are some duplication of the recovery state management here and in Eventsourced.scala,
   //      but the enhanced PersistentView will not be based on recovery infrastructure, and
   //      therefore this code will be replaced anyway
@@ -256,7 +253,7 @@ trait PersistentView extends Actor with Snapshotter with Stash with StashFactory
           case SelectedSnapshot(metadata, snapshot) ⇒
             setLastSequenceNr(metadata.sequenceNr)
             // Since we are recovering we can ignore the receive behavior from the stack
-            superAroundReceive(receive, SnapshotOffer(metadata, snapshot))
+            PersistentView.super.aroundReceive(receive, SnapshotOffer(metadata, snapshot))
         }
         changeState(replayStarted(await = true))
         journal ! ReplayMessages(lastSequenceNr + 1L, toSnr, replayMax, persistenceId, self)
@@ -292,7 +289,7 @@ trait PersistentView extends Actor with Snapshotter with Stash with StashFactory
         try {
           currentMessageIsReplayed = true
           updateLastSequenceNr(p)
-          superAroundReceive(receive, p.payload)
+          PersistentView.super.aroundReceive(receive, p.payload)
         } catch {
           case NonFatal(t) ⇒
             val currentMsg = context.asInstanceOf[ActorCell].currentMessage
@@ -305,7 +302,7 @@ trait PersistentView extends Actor with Snapshotter with Stash with StashFactory
       case ReplayMessagesFailure(cause) ⇒
         onReplayComplete(await)
         // FIXME what happens if RecoveryFailure is handled, i.e. actor is not stopped?
-        superAroundReceive(receive, RecoveryFailure(cause))
+        PersistentView.super.aroundReceive(receive, RecoveryFailure(cause))
       case other ⇒
         internalStash.stash()
     }
@@ -373,7 +370,7 @@ trait PersistentView extends Actor with Snapshotter with Stash with StashFactory
       case Update(awaitUpdate, replayMax) ⇒
         changeState(replayStarted(await = awaitUpdate))
         journal ! ReplayMessages(lastSequenceNr + 1L, Long.MaxValue, replayMax, persistenceId, self)
-      case other ⇒ superAroundReceive(receive, other)
+      case other ⇒ PersistentView.super.aroundReceive(receive, other)
     }
   }
 
